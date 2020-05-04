@@ -1,0 +1,6 @@
+*.gcov
+*.gcda
+*.gcno
+*.o
+*.so
+*.old

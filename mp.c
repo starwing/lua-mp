@@ -161,7 +161,7 @@ static int Lmap(lua_State *L)     { return lmp_object(L, 1, "map"); }
 
 typedef struct lmp_HeapBuffer {
     unsigned cap;
-    char    *data;
+    unsigned char *data;
 } lmp_HeapBuffer;
 
 typedef struct lmp_Buffer {
@@ -170,7 +170,7 @@ typedef struct lmp_Buffer {
     unsigned sso : 1;
     union {
         lmp_HeapBuffer heap;
-        char buff[LMP_SSO_SIZE];
+        unsigned char buff[LMP_SSO_SIZE];
     } u;
 } lmp_Buffer;
 
@@ -181,13 +181,13 @@ typedef struct lmp_Buffer {
 #define lmp_nomem(B)        luaL_error((B)->L, "out of memory")
 #define lmp_toobig(B,i,n,l) lmp_error(B,i,0,"%s too large (count=%d)",(n),(int)(l))
 
-static int lmp_encode (lmp_Buffer *B, int idx, int type);
+static int lmp_encode (lmp_Buffer *B, int idx, int type, int hidx);
 static int lmp_pack   (lmp_Buffer *B, int idx, const char *type, int fetch);
 
 static void lmp_resetbuffer(lmp_Buffer *B)
 { if (B->sso) { free(lmp_data(B)); memset(B, 0, sizeof(lmp_Buffer)); } }
 
-static char *lmp_prepare(lmp_Buffer *B, size_t len) {
+static unsigned char *lmp_prepare(lmp_Buffer *B, size_t len) {
     unsigned expected = B->len + (unsigned)len;
     unsigned cap = B->sso ? B->u.heap.cap : LMP_SSO_SIZE;
     if (expected > cap) {
@@ -199,14 +199,14 @@ static char *lmp_prepare(lmp_Buffer *B, size_t len) {
         if (!(newptr = realloc(oldptr, newsize))) lmp_nomem(B);
         if (!B->sso) memcpy(newptr, lmp_data(B), B->len);
         B->sso = 1;
-        B->u.heap.data = (char*)newptr;
+        B->u.heap.data = (unsigned char*)newptr;
         B->u.heap.cap  = newsize;
     }
     return lmp_data(B) + B->len;
 }
 
 static void lmp_writeuint(lmp_Buffer *B, lmp_U64 v, int len) {
-    char buff[8];
+    unsigned char buff[8];
     switch (len) {
     case 8: buff[0] = (v >> 56) & 0xFF;
             buff[1] = (v >> 48) & 0xFF;
@@ -214,7 +214,7 @@ static void lmp_writeuint(lmp_Buffer *B, lmp_U64 v, int len) {
             buff[3] = (v >> 32) & 0xFF; /* FALLTHROUGH */
     case 4: buff[4] = (v >> 24) & 0xFF;
             buff[5] = (v >> 16) & 0xFF; /* FALLTHROUGH */
-    case 2: buff[6] = (v >>  8) & 0xFF;
+    case 2: buff[6] = (v >>  8) & 0xFF; /* FALLTHROUGH */
     case 1: buff[7] = (v      ) & 0xFF; /* FALLTHROUGH */
     }
     lmp_addchars(B, buff+8-len, len);
@@ -237,8 +237,8 @@ static void lmp_writefloat(lmp_Buffer *B, lua_Number n, int len) {
     union {
         float    f32;
         double   f64;
-        lmp_U64  u64;
         unsigned u32;
+        lmp_U64  u64;
     } u;
     if (len == 4) {
         u.f32 = (float)n; 
@@ -262,7 +262,7 @@ static void lmp_writestring(lmp_Buffer *B, int base, const char *s, size_t len) 
 }
 
 static void lmp_writeext(lmp_Buffer *B, int type, const char *s, size_t len) {
-    char *buff = lmp_prepare(B, 2);
+    unsigned char *buff = lmp_prepare(B, 2);
     int o;
     buff[1] = type, B->len += 2;
     switch (len) {
@@ -310,7 +310,7 @@ static int lmp_addstring(lmp_Buffer *B, int idx, int type) {
     return 1;
 }
 
-static int lmp_addarray(lmp_Buffer *B, int idx) {
+static int lmp_addarray(lmp_Buffer *B, int idx, int hidx) {
     int i, len = (int)luaL_len(B->L, idx);
     int top = lua_gettop(B->L);
     if (top > LMP_MAX_STACK || !lua_checkstack(B->L, 5))
@@ -325,7 +325,7 @@ static int lmp_addarray(lmp_Buffer *B, int idx) {
         lmp_writeuint(B, len, 4);
     }
     for (i = 1; i <= len; ++i) {
-        if (!lmp_encode(B, top+1, lua53_geti(B->L, idx, i)))
+        if (!lmp_encode(B, top+1, lua53_geti(B->L, idx, i), hidx))
             return lmp_error(B, idx,top+1, "invalid element '%d' in array", i);
         lua_pop(B->L, 1);
     }
@@ -334,7 +334,7 @@ static int lmp_addarray(lmp_Buffer *B, int idx) {
 
 static void lmp_fixmapszie(lmp_Buffer *B, unsigned off, unsigned count) {
     unsigned len = B->len - off;
-    char *buff;
+    unsigned char *buff;
     lmp_prepare(B, 5);
     buff = lmp_data(B) + off;
     if (count < 16)
@@ -350,7 +350,7 @@ static void lmp_fixmapszie(lmp_Buffer *B, unsigned off, unsigned count) {
     }
 }
 
-static int lmp_addmap(lmp_Buffer *B, int idx) {
+static int lmp_addmap(lmp_Buffer *B, int idx, int hidx) {
     unsigned off = B->len + 1, count = 0;
     int top = lua_gettop(B->L);
     if (top > LMP_MAX_STACK || !lua_checkstack(B->L, 10))
@@ -358,9 +358,9 @@ static int lmp_addmap(lmp_Buffer *B, int idx) {
     lmp_addchar(B, 0x80);
     lua_pushnil(B->L);
     for (; lua_next(B->L, idx); ++count) {
-        if (!lmp_encode(B, top+1, 0))
+        if (!lmp_encode(B, top+1, 0, hidx))
             return lmp_error(B, idx,top+1, "invalid key in map");
-        if (!lmp_encode(B, top+2, 0))
+        if (!lmp_encode(B, top+2, 0, hidx))
             return lmp_error(B, idx,top+2, "invalid value for key '%s' in map",
                     luaL_tolstring(B->L, top+1, NULL));
         lua_pop(B->L, 1);
@@ -393,15 +393,9 @@ static int lmp_addext(lmp_Buffer *B, int idx, int fetch) {
     return 1;
 }
 
-static int lmp_addhandler(lmp_Buffer *B, int idx, int fetch) {
+static int lmp_handlerresult(lmp_Buffer *B, int idx, int top) {
+    int r;
     const char *type;
-    int r, top = lua_gettop(B->L)+1;
-    if (!fetch)
-        lua_pushvalue(B->L, idx);
-    else if (lua53_getfield(B->L, idx, "pack") == LUA_TNIL)
-        return lmp_error(B, idx,0, "'pack' field expected in handler object");
-    if (fetch) lua_pushvalue(B->L, idx);
-    lua_call(B->L, fetch, 3);
     if ((type = lua_tostring(B->L, top)) == NULL)
         return lmp_error(B, idx,0, "type expected from handler, got %s",
                 luaL_typename(B->L, top));
@@ -409,6 +403,17 @@ static int lmp_addhandler(lmp_Buffer *B, int idx, int fetch) {
     if (r ==  0) return lmp_error(B, idx,top+1, "error from handler");
     if (r == -1) return lmp_error(B, idx,0, "invalid msgpack.type '%s'", type);
     return (lua_pop(B->L, 3), 1);
+}
+
+static int lmp_addhandler(lmp_Buffer *B, int idx, int fetch) {
+    int top = lua_gettop(B->L)+1;
+    if (!fetch)
+        lua_pushvalue(B->L, idx);
+    else if (lua53_getfield(B->L, idx, "pack") == LUA_TNIL)
+        return lmp_error(B, idx,0, "'pack' field expected in handler object");
+    if (fetch) lua_pushvalue(B->L, idx);
+    lua_call(B->L, fetch, 3);
+    return lmp_handlerresult(B, idx, top);
 }
 
 static int lmp_check(lmp_Buffer *B, int idx, int fetch, int type) {
@@ -437,10 +442,10 @@ static int lmp_pack(lmp_Buffer *B, int idx, const char *type, int fetch) {
     case 'd': return check(LUA_TNUMBER, lmp_addfloat(B,idx,8));
     case 's': return check(LUA_TSTRING, lmp_addstring(B,idx,0xD9));
     case 'b': return check(LUA_TSTRING, lmp_addstring(B,idx,0xC4));
-    case 'v': return check(0,           lmp_encode(B, idx, 0));
+    case 'v': return check(0,           lmp_encode(B, idx, 0, 0));
     case 'h': return lmp_addhandler(B, idx, 1);
-    case 'a': return lmp_addarray(B, idx);
-    case 'm': return lmp_addmap(B, idx);
+    case 'a': return lmp_addarray(B, idx, 0);
+    case 'm': return lmp_addmap(B, idx, 0);
     case 'e': return lmp_addext(B, idx, 1);
     }
 #undef check
@@ -461,14 +466,14 @@ static int lmp_addnumber(lmp_Buffer *B, int idx) {
     return 1;
 }
 
-static int lmp_addtable(lmp_Buffer *B, int idx) {
+static int lmp_addtable(lmp_Buffer *B, int idx, int hidx) {
     const char *type = lmp_type(B->L, idx);
     int r = lmp_pack(B, idx, type, 1);
     if (r == 0 || r == 1) return r;
-    return luaL_len(B->L, idx) > 0 ? lmp_addarray(B, idx) : lmp_addmap(B, idx);
+    return luaL_len(B->L, idx) > 0 ? lmp_addarray(B, idx, hidx) : lmp_addmap(B, idx, hidx);
 }
 
-static int lmp_encode(lmp_Buffer *B, int idx, int type) {
+static int lmp_encode(lmp_Buffer *B, int idx, int type, int hidx) {
     switch (type ? type : (type = lua_type(B->L, idx))) {
     case LUA_TNONE:
     case LUA_TNIL:      lmp_addchar(B, 0xC0); return 1;
@@ -476,28 +481,24 @@ static int lmp_encode(lmp_Buffer *B, int idx, int type) {
     case LUA_TNUMBER:   return lmp_addnumber(B, idx);
     case LUA_TSTRING:   return lmp_addstring(B, idx, 0xD9);
     case LUA_TFUNCTION: return lmp_addhandler(B, idx, 0);
-    case LUA_TTABLE:    return lmp_addtable(B, idx);
+    case LUA_TTABLE:    return lmp_addtable(B, idx, hidx);
+    }
+    if (hidx) {
+        int top = lua_gettop(B->L)+1;
+        lua_pushvalue(B->L, idx);
+        lua_pushvalue(B->L, hidx);
+        lua_insert(B->L, -2);
+        lua_call(B->L, 1, 3);
+        return lmp_handlerresult(B, idx, top);
     }
     return lmp_error(B, idx,0, "invalid type '%s'", lua_typename(B->L, type));
 }
 
-static int Lencode_aux(lua_State *L) {
-    lmp_Buffer *B = (lmp_Buffer*)lua_touserdata(L, 1);
-    int i, top = lua_gettop(L);
-    B->L = L;
-    for (i = 2; i <= top; ++i)
-        if (!lmp_encode(B, i, 0))
-            return luaL_error(L, "bad argument to #%d: %s",
-                    i-1, lua_tostring(L, i));
-    lua_pushlstring(L, lmp_data(B), B->len);
-    return 1;
-}
-
-static int Lencode(lua_State *L) {
+static int lmp_encode_helper(lua_State *L, lua_CFunction encode) {
     lmp_Buffer B;
     int r;
     memset(&B, 0, sizeof(B));
-    lua_pushcfunction(L, Lencode_aux);
+    lua_pushcfunction(L, encode);
     lua_insert(L, 1);
     lua_pushlightuserdata(L, &B);
     lua_insert(L, 2);
@@ -505,6 +506,36 @@ static int Lencode(lua_State *L) {
     lmp_resetbuffer(&B);
     return r ? 1 : luaL_error(L, "%s", lua_tostring(L, -1));
 }
+
+static int Lencode_aux(lua_State *L) {
+    lmp_Buffer *B = (lmp_Buffer*)lua_touserdata(L, 1);
+    int i, top = lua_gettop(L);
+    B->L = L;
+    for (i = 2; i <= top; ++i)
+        if (!lmp_encode(B, i, 0, 0))
+            return luaL_error(L, "bad argument to #%d: %s",
+                    i-1, lua_tostring(L, i));
+    lua_pushlstring(L, (const char*)lmp_data(B), B->len);
+    return 1;
+}
+
+static int Lhencode_aux(lua_State *L) {
+    lmp_Buffer *B = (lmp_Buffer*)lua_touserdata(L, 1);
+    int i, top = lua_gettop(L);
+    B->L = L;
+    for (i = 3; i <= top; ++i)
+        if (!lmp_encode(B, i, 0, 2))
+            return luaL_error(L, "bad argument to #%d: %s",
+                    i-1, lua_tostring(L, i));
+    lua_pushlstring(L, (const char*)lmp_data(B), B->len);
+    return 1;
+}
+
+static int Lencode(lua_State *L)
+{ return lmp_encode_helper(L, Lencode_aux); }
+
+static int Lhencode(lua_State *L)
+{ return lmp_encode_helper(L, Lhencode_aux); }
 
 
 /* decode */
@@ -558,7 +589,9 @@ static lmp_U64 lmp_readuint(lmp_Slice *S, int len, const char *tname) {
 
 static lmp_I64 lmp_u2s(lmp_U64 v, int len) {
     const lmp_I64 m = 1LL << (len*8 - 1);
-    return v&m ? (lmp_I64)(v^m) - m : (lmp_I64)v;
+    if (len == 8 || !(v & (lmp_U64)m)) return (lmp_I64)v;
+    v = v & ((1ULL << len*8) - 1);
+    return (lmp_I64)(v^m) - m;
 }
 
 static lua_Number lmp_readfloat(lmp_Slice *S, int len) {
@@ -759,6 +792,7 @@ LUALIB_API int luaopen_mp(lua_State *L) {
         ENTRY(map),
         ENTRY(meta),
         ENTRY(encode),
+        ENTRY(hencode),
         ENTRY(decode),
         ENTRY(fromhex),
         ENTRY(tohex),
@@ -773,5 +807,5 @@ LUALIB_API int luaopen_mp(lua_State *L) {
 /* cc: flags+='-march=native -O3 -Wextra -pedantic --coverage'
  * unixcc: flags+='-shared -fPIC ' output='mp.so'
  * maccc: flags+='-undefined dynamic_lookup'
- * win32cc: flags+='-mdll -DLUA_BUILD_AS_DLL ' libs+='-llua53' output='mp.dll' */
+ * win32cc: flags+='-mdll -DLUA_BUILD_AS_DLL ' libs+='-llua54' output='mp.dll' */
 

@@ -167,6 +167,17 @@ function _G.test_handler()
    check_eq(function() return "s", "foo" end, "foo")
    check_eq(function() return "b", "foo" end, "foo")
 
+   local co = coroutine.create(function()end)
+   local c = 0
+   local v = mp.hencode(function(v)
+      if v == co then
+         c = c + 1
+         return "int", 1
+      end
+      return "nil"
+   end, co, co, co)
+   eq(c, 3)
+   eq(v, "\1\1\1")
 end
 
 function _G.test_error()

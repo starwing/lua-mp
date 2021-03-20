@@ -127,6 +127,7 @@ end
 function _G.test_nil()
    check_eq(nil)
    eq(mp.decode(mp.encode(mp.null)), nil)
+   eq(mp.decode(mp.newencoder()(mp.null)), nil)
    eq(tostring(mp.null), "null")
 end
 
@@ -169,15 +170,46 @@ function _G.test_handler()
 
    local co = coroutine.create(function()end)
    local c = 0
-   local v = mp.hencode(function(v)
+   local v = mp.newencoder(function(v, k, t)
+      assert(k == nil)
+      assert(t == nil)
       if v == co then
          c = c + 1
          return "int", 1
       end
       return "nil"
-   end, co, co, co)
-   eq(c, 3)
-   eq(v, "\1\1\1")
+   end)(co, co, co)
+   eq(c, 3); eq(v, "\1\1\1")
+   c = 0; v = mp.newencoder(function(v, k, t)
+      assert(k >= 1 and k <= 3)
+      assert(type(t) == "table")
+      if v == co then
+         c = c + 1
+         return "int", 1
+      end
+      return "nil"
+   end)({co, co, co})
+   eq(c, 3); eq(v, "\x93\1\1\1")
+   c = 0; v = mp.newencoder(function(v, k, t)
+      assert(k == "foo")
+      assert(type(t) == "table")
+      if v == co then
+         c = c + 1
+         return "int", 1
+      end
+      return "nil"
+   end)({foo = co})
+   eq(c, 1); eq(v, "\x81\xA3foo\1")
+   c = 0; v = mp.newencoder(function(v, k, t)
+      assert(k == nil)
+      assert(type(t) == "table")
+      if v == co then
+         c = c + 1
+         return "int", 1
+      end
+      return "nil"
+   end)({[co] = "bar"})
+   eq(c, 1); eq(v, "\x81\1\xA3bar")
 end
 
 function _G.test_error()
@@ -234,4 +266,5 @@ else
    os.exit(u.LuaUnit.run(), true)
 end
 
--- cc: run='rm -f *.gcda; time lua test.lua; gcov mp.c'
+-- unixcc: run='rm -f *.gcda; time lua test.lua; gcov mp.c'
+-- win32cc: run='del /s/q *.gcda & lua test.lua & gcov mp.c'

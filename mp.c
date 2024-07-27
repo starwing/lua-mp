@@ -264,16 +264,20 @@ static void lmp_writestring(lmp_Buffer *B, int base, const char *s, size_t len) 
 static void lmp_writeext(lmp_Buffer *B, int type, const char *s, size_t len) {
     unsigned char *buff = lmp_prepare(B, 2);
     int o;
-    buff[1] = type, B->len += 2;
     switch (len) {
     case 1:  buff[0] = 0xD4; break;
     case 2:  buff[0] = 0xD5; break;
     case 4:  buff[0] = 0xD6; break;
     case 8:  buff[0] = 0xD7; break;
     case 16: buff[0] = 0xD8; break;
-    default: buff[0] = 0xC7 + (o = lmp_calcbytes(len));
-             lmp_writeuint(B, len, 1<<o);
+    default:
+      o = lmp_calcbytes(len);
+      lmp_prefix(B, len, 0xC7, o);
+      lmp_addchar(B, type);
+      lmp_addchars(B, s, len);
+      return;
     }
+    buff[1] = type, B->len += 2;
     lmp_addchars(B, s, len);
 }
 
@@ -679,8 +683,8 @@ static lua_Number lmp_readfloat(lmp_Slice *S, int len) {
 static void lmp_pushext(lmp_Slice *S, int fix, size_t len) {
     int type;
     lmp_ensure(S, len+1, "extension");
-    type = (int)(signed char)*S->p++;
     if (!fix) len = lmp_readsize(S, len), lmp_ensure(S, len, "extension");
+    type = (int)(signed char)*S->p++;
     lua_pushinteger(S->L, type);
     lua_pushlstring(S->L, S->p, len);
     S->p += len;

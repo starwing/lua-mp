@@ -4,6 +4,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 
 #if LUA_VERSION_NUM == 501
 # define LUA_OK 0
